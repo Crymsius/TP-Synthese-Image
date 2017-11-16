@@ -8,22 +8,17 @@
     struct vec3 { float x, y, z; };
     struct vec4 { float x, y, z, w; };
  */
-//uniform float translation;
-//uniform mat4 translationMatrix;
-//uniform mat4 rotationMatrix;
+layout (location = 0) in vec3 position;
 uniform mat4 mvpMatrix;
 
 void main( )
 {
     // intialiser les coordonnees des 3 sommets
-    vec3 positions[3]= vec3[3]( vec3(-0.5, -0.5, -1), vec3(0.5, -0.5, -1), vec3(0, 0.5, -1) );
+//    vec3 positions[10]= vec3[10]( vec3(-0.5, -0.5, -1), vec3(0.5, -0.5, -1), vec3(0, 0.5, -1) );
     
     // recuperer le sommet a traiter
-    vec3 p= positions[gl_VertexID];
     
-    //p.x = p.x + translation;
-    //p = p * mat3(rotationMatrix);
-    vec4 q = mvpMatrix * vec4(p,1);
+    vec4 q = mvpMatrix * vec4(position,1);
     // renvoyer le resultat du vertex shader, positon du sommet dans le repere projectif
     gl_Position = q;
 }

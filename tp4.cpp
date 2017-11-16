@@ -1,17 +1,25 @@
-
 //! \file tp2.cpp application minimaliste openGL3 core
+
 
 #include <fstream>
 #include <sstream>
 #include <string>
 
-#include "glcore.h"
-#include "uniforms.h"
-#include "SDL2/SDL.h"
-#include "orbiter.h"
-#include "draw.h"
 #include "mesh.h"
 #include "wavefront.h"
+#include "texture.h"
+
+#include "program.h"
+#include "uniforms.h"
+
+#include "orbiter.h"
+
+#include "glcore.h"
+#include "SDL2/SDL.h"
+#include "draw.h"
+#include "tutos/mesh_data.h"
+#include "tutos/mesh_buffer.h"
+#include "tutos/material_data.h"
 
 /* une application opengl est composee de plusieurs composants :
     1. une fenetre pour voir ce que l'on dessine
@@ -25,9 +33,6 @@
  */
 
 
-// identifiants des shaders
-GLuint vertex_shader;
-GLuint fragment_shader;
 // identifiant du shader program
 GLuint program;
 
@@ -36,14 +41,26 @@ GLuint vao;
 
 //buffer
 GLuint buffer;
+GLuint index_buffer;
+
+MeshBuffer mesh;
+
+GLuint base_texture;
+GLuint detail_texture;
+GLuint sampler;
+
+GLuint color_buffer;
+GLuint depth_buffer;
+GLuint framebuffer;
+int framebuffer_width;
+int framebuffer_height;
 
 int vertex_count;
+int index_count;
 
 Transform model = Transform();
 Transform view = Transform();
 Transform projection = Transform();
-vec3 positions[10];
-
 
 Orbiter camera;
 
@@ -68,39 +85,9 @@ std::string read( const char *filename )
 // creation des objets openGL
 bool init_program( )
 {
-    // charger le source du vertex shader
-    //PARTIE 1 :
-    //std::string vertex_source= read("/Users/crymsius/gkit2light/src/shader/tp2GL_vertex.glsl");
-    //PARTIE 2 :
-    std::string vertex_source= read("/Users/crymsius/gkit2light/src/shader/tp2_2GL_vertex.glsl");
-    // creer un objet openGL : vertex shader
-    vertex_shader= glCreateShader(GL_VERTEX_SHADER);
+    program = read_program("shader/tp4_vert_frag.glsl" );
+   
     
-    // preparer les chaines de caracteres pour compiler le shader
-    const char *vertex_strings[]= { vertex_source.c_str() };
-    glShaderSource(vertex_shader, 1, vertex_strings, NULL);
-    // compiler les sources
-    glCompileShader(vertex_shader);
-    
-    // pareil pour le fragment shader
-    //PARTIE 1 :
-    //std::string vertex_source= read("/Users/crymsius/gkit2light/src/shader/tp2GL_fragment.glsl");
-    //PARTIE 2 :
-    std::string fragment_source= read("/Users/crymsius/gkit2light/src/shader/tp2_2GL_fragment.glsl");
-    fragment_shader= glCreateShader(GL_FRAGMENT_SHADER);
-    const char *fragment_strings[]= { fragment_source.c_str() };
-    glShaderSource(fragment_shader, 1, fragment_strings, NULL);
-    glCompileShader(fragment_shader);
-
-    // creer un object openGL : shader program 
-    program= glCreateProgram();
-    // inclure les 2 shaders dans le program
-    glAttachShader(program, vertex_shader);
-    glAttachShader(program, fragment_shader);
-    // linker les shaders
-    glLinkProgram(program);
-    
-    // verifier que tout c'est bien passe, si les shaders ne se sont pas compiles correctement, le link du program va echouer.
     GLint status;
     glGetProgramiv(program, GL_LINK_STATUS, &status);
     if(status == GL_FALSE) 
@@ -108,8 +95,7 @@ bool init_program( )
         printf("[error] compiling shaders / linking program...\n");
         return false;
     }
-    
-    // ok, pas d'erreur
+
     return true;
 }
 
@@ -126,64 +112,91 @@ bool init( )
     // init shader program
     if(!init_program())
         return false;
-    
-    // charge un objet
-    Mesh mesh= read_mesh(smart_path("data/bigguy.obj"));
-    vertex_count= mesh.vertex_count();
-    
-    Point pmin, pmax;
-    mesh.bounds(pmin, pmax);
-    camera.lookat(pmin, pmax);
-    
-//    for (int i = -5; i < 5; i++) {
-//        for (int j = -5; j < 5; j++) {
-//            positions[i] = vec3(i*0.3, j*0.2, -1);
-//            std::printf("%f",positions[i].x);
-//            std::printf("%f\n",positions[i].y);
-//        }
-//    }
-
-//    positions[0]= vec3(-1, -1, -1);
-//    positions[1]= vec3(-1, -0.5, -1);
-//    positions[2]= vec3(-0.5, -0.5, -1);
 
     // init vao
     if(!init_vao())
         return false;
     
+    // charge un objet
+    MeshData data = read_mesh_data("data/sponza/sponza.obj");
+    if (data.normals.size() == 0) // calculer les normales, si necessaire
+        normals(data);
+    
+    mesh = buffers(data);
+    vertex_count = mesh.positions.size();
+    index_count = mesh.indices.size();
+    
+    Point pmin, pmax;
+    bounds(data, pmin, pmax);
+    camera.lookat(pmin, pmax);
+    
+    
     // options globales du pipeline
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);  // dessiner dans les images associees a la fenetre
     glDrawBuffer(GL_BACK);      // dessiner dans l'image non affichee de la fenetre
     
-/* cf l'option SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1); dans main() qui demande la creation d'au moins 2 images, GL_FRONT et GL_BACK.
-    GL_FRONT est l'image affichee par la fenetre, on peut dessiner dans GL_BACK sans perturber l'affichage. lorsque le dessin est fini, on echange les 2 images...
-    
-    remarque : si une seule image est associee a la fenetre, 
-        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 0); 
-        utiliser :
-        glDrawBuffer(GL_FRONT); 
- */
     glBindVertexArray(vao);
-    // creer, initialiser le buffer : positions + normals + texcoords du mesh
     glGenBuffers(1, &buffer);
     glBindBuffer(GL_ARRAY_BUFFER, buffer);
-    // taille totale du buffer
-    glBufferData(GL_ARRAY_BUFFER, mesh.vertex_buffer_size(), mesh.vertex_buffer(), GL_STATIC_DRAW);
-    // transfere les positions des sommets
-    // et configure l'attribut 0, vec3 position
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, /* stride */ 0, 0);
+    
+    size_t size = mesh.vertex_buffer_size() + mesh.normal_buffer_size() + mesh.texcoord_buffer_size();
+    glBufferData(GL_ARRAY_BUFFER, size, nullptr, GL_STATIC_DRAW);
+
+    // sommets
+    size_t offset= 0;
+    size = mesh.vertex_buffer_size();
+    glBufferSubData(GL_ARRAY_BUFFER, offset, size, mesh.vertex_buffer());
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, /* stride */ 0, (const GLvoid *) offset);
     glEnableVertexAttribArray(0);
+    
+    // normales
+    offset= offset + size;
+    size= mesh.normal_buffer_size();
+    glBufferSubData(GL_ARRAY_BUFFER, offset, mesh.normal_buffer_size(), mesh.normal_buffer());
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, /* stride */ 0, (const GLvoid *) offset);
+    glEnableVertexAttribArray(1);
+    
+    //textures
+    offset= offset + size;
+    size= mesh.texcoord_buffer_size();
+    glBufferSubData(GL_ARRAY_BUFFER, offset, size, mesh.texcoord_buffer());
+    // et configure l'attribut 1, vec2 texcoord
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, /* stride */ 0, (const GLvoid *) offset);
+    glEnableVertexAttribArray(2);
+    
+    // index buffer
+    glGenBuffers(1, &index_buffer);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.index_buffer_size(), mesh.index_buffer(), GL_STATIC_DRAW);
     
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // etape 3 : sampler, parametres de filtrage des textures
+    glGenSamplers(1, &sampler);
     
+    glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    
+    // etape 4 : creation des textures
+    /* utilise les utilitaires de texture.h
+     */
+//    base_texture= read_texture(0, "data/sponzasmall/KAMEN.JPG");             // texture 'base'
+//    detail_texture= read_texture(0, "data/sponzasmall/01_St_kp.JPG");    // texture 'detail'
+    read_textures(mesh.materials);
+    
+    // nettoyage
+//    glBindTexture(GL_TEXTURE_2D, material.diffuse_texture);
+    glUseProgram(0);
+
     glViewport(0, 0, 1024, 640);        // definir la region (x, y, largeur, hauteur) de la fenetre dans laquelle dessiner
-    
     glClearColor(0.2, 0.2, 0.2, 1);     // definir la couleur par defaut (gris)
-    
-    glDisable(GL_DEPTH_TEST);           // pas de test sur la profondeur
+    glClearDepthf(1.0f);
+    glDepthFunc(GL_LESS);
+    glEnable(GL_DEPTH_TEST);           // pas de test sur la profondeur
     glDisable(GL_CULL_FACE);            // pas de test sur l'orientation
-    
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);  // dessiner tous les pixels du triangle
     
     return true;
@@ -193,30 +206,27 @@ bool init( )
 // destruction des objets openGL
 void quit( )
 {
-    glDeleteShader(vertex_shader);
-    glDeleteShader(fragment_shader);
-    glDeleteProgram(program);
+    release_textures(mesh.materials);
+    glDeleteBuffers(1, &buffer);
+    glDeleteBuffers(1, &index_buffer);
+    glDeleteSamplers(1, &sampler);
     glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(program);
+//    glDeleteTextures(1, &base_texture);
+//    glDeleteTextures(1, &detail_texture);
 }
 
 
 // affichage
 void draw( )
 {
-    // effacer la fenetre : copier la couleur par defaut dans tous les pixels de la fenetre
-    //~ // cf init(): glClearColor(0.2, 0.2, 0.2, 1); 
-    //~ glClear(GL_COLOR_BUFFER_BIT);
-    
     float black[]= { .2f, .2f, .2f, 1.f };
+    
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glClearBufferfv(GL_COLOR, 0, black);
     
-    // configurer le pipeline, selectionner le vertex array a utiliser
     glBindVertexArray(vao);
-
-    // configurer le pipeline, selectionner le shader program a utiliser
     glUseProgram(program);
-    
-    
     
     int mx, my;
     unsigned int mb= SDL_GetRelativeMouseState(&mx, &my);
@@ -228,19 +238,55 @@ void draw( )
     
     else if(mb & SDL_BUTTON(3))         // le bouton droit est enfonce
         // approche / eloigne l'objet
-        camera.move(my);
+        camera.move(-my);
     
     else if(mb & SDL_BUTTON(2))         // le bouton du milieu est enfonce
         // deplace le point de rotation
         camera.translation((float) mx / (float) window_width(), (float) my / (float) window_height());
 
-    Transform mvpMatrix = Perspective(45, 16.f/9.f, 0.1f, 100) * camera.view() * model;
-    //std::cout << Perspective(45, 1, 0.1f, 10) << std::endl;
+    Transform mvpMatrix = Perspective(45, 16.f/9.f, 0.1f, 10000) * camera.view() * model;
+    program_uniform(program, "model", model);
     program_uniform(program, "mvpMatrix", mvpMatrix);
+    program_uniform(program, "cameraPos", camera.position());
     
-    // dessiner 1 triangle, soit 3 indices (gl_VertexID varie de 0 a 3)
-    glDrawArrays(GL_TRIANGLES, 0, vertex_count);
-
+    // texture et parametres de filtrage de la texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, base_texture);
+    glBindSampler(0, sampler);
+    
+    glActiveTexture(GL_TEXTURE0 +1);
+    glBindTexture(GL_TEXTURE_2D, detail_texture);
+    glBindSampler(1, sampler);
+    
+    // uniform sampler2D declares par le fragment shader
+    GLint location;
+    location= glGetUniformLocation(program, "base_texture");
+    glUniform1i(location, 0);
+    
+    location= glGetUniformLocation(program, "detail_texture");
+    glUniform1i(location, 1);
+    
+    for(int i= 0; i < mesh.material_groups.size(); i++){
+        
+        const MaterialData& material= mesh.materials[mesh.material_groups[i].material];
+        program_uniform(program, "diffuse_color", material.diffuse);
+        
+        // utilise une texture
+        // . selectionne l'unite de texture 0
+        glActiveTexture(GL_TEXTURE0);
+        // . selectionne la texture
+        glBindTexture(GL_TEXTURE_2D, material.diffuse_texture);
+        // . parametre le shader avec le numero de l'unite sur laquelle est selectionee la texture
+        GLint location= glGetUniformLocation(program, "diffuse_texture");
+        glUniform1i(location, 0);
+        
+        // . parametres de filtrage
+        glBindSampler(0, sampler);
+        
+//        program_uniform(program, "mesh_color", Color((i % 100) / 99.f, 1 - (i % 10) / 9.f, (i % 4) / 3.f));
+        // afficher chaque x de triangles
+        glDrawElements(GL_TRIANGLES, /* count */ mesh.material_groups[i].count, /* index type */ GL_UNSIGNED_INT, /* offset */ mesh.index_buffer_offset(mesh.material_groups[i].first));
+    }
 }
 
 
@@ -268,7 +314,9 @@ int main( int argc, char **argv )
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GLContext context= SDL_GL_CreateContext(window);
     if(context == NULL)
     {
@@ -313,16 +361,13 @@ int main( int argc, char **argv )
                 done= true;  // sortir si click sur le bouton de la fenetre
             else if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)
                 done= true;  // sortir si la touche esc / echapp est enfoncee
-            //else if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_j)
-                //program_uniform(program, "rotationMatrix", RotationZ(20.f));
-            //else if(event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_k)
-                //program_uniform(program, "rotationMatrix", RotationZ(-20.f));
         }
         
         // dessiner
         draw();
         
         // presenter / montrer le resultat, echanger les images associees a la fenetre, GL_FRONT et GL_BACK, cf init()
+        glFinish(); // execute 1 fois puis bascule
         SDL_GL_SwapWindow(window);
     }
 
